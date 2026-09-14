@@ -316,6 +316,6 @@ Pull requests are welcome. Priority areas:
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+GNU General Public License v3.0 (GPL-3.0) — see [LICENSE](LICENSE) for details.
 
 Data is sourced from Thomson Reuters Westlaw. This project is not affiliated with or endorsed by Thomson Reuters.

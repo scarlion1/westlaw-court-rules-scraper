@@ -1,6 +1,7 @@
 {
   "name": "app",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
