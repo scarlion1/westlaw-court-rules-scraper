@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# Next.js build output
+nextjs_space/.next/
+nextjs_space/out/
+
+# Environment variables — keep the example, ignore real secrets
+nextjs_space/.env
+nextjs_space/.env.local
+nextjs_space/.env.production
+
+# Abacus internal platform files
+.abacus.donotdelete
+
+# TypeScript build info (regenerated on build)
+tsconfig.tsbuildinfo
+nextjs_space/tsconfig.tsbuildinfo
+
+# OS artifacts
+.DS_Store
+Thumbs.db
