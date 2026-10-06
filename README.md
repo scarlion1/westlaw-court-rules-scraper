@@ -16,7 +16,32 @@ A Next.js web application that scrapes court rules from **Thomson Reuters Westla
 - **Retry on failure** — individual failed documents can be retried without re-scraping the entire rule set
 - **Download as JSON** — exports the complete hierarchical structure with citations, currentness notes, and full document text
 - **Upload & browse** — re-load a previously downloaded JSON file to browse it in the viewer without re-scraping
+- **Demo rule sets included** — 5 pre-scraped Arizona rule sets ready to explore immediately
+- **Browser-assisted scraping** — bypass Cloudflare bot challenges using your own browser session and IP
 - **Dark mode** — fully themed with system preference detection
+
+---
+
+## Demo Files
+
+The [`demo-data/`](demo-data/) folder has five Arizona rule sets that were already scraped with this tool. You can browse them in the viewer without running a scrape: open the app, click **Upload JSON** under **View Previously Downloaded Rules**, and choose a file. Files are parsed in your browser and never leave your machine.
+
+The five rule sets are Civil Appellate Procedure, Civil Procedure (Superior Courts), Evidence, Small Claims Procedure and the Rules of the Supreme Court of Arizona. See [`demo-data/README.md`](demo-data/README.md) for document counts and scrape dates.
+
+> **Note:** Westlaw's Arizona rules site is now behind Cloudflare bot protection, which can block scraping from cloud servers (HTTP 403 with a Cloudflare challenge). When that happens the live list of rule sets won't load, but uploading demo or saved JSON files still works.
+
+## Scraping With Your Own Connection
+
+When the server is blocked, the app can run the scrape in **your** browser, using your IP address and your Cloudflare clearance:
+
+1. Click **Open WestLaw** in the app and complete any "I'm human" check in the new tab. **You must use this button.** The app can only talk to a WestLaw tab that it opened itself; a tab you open yourself won't connect.
+2. Click **Copy console code** in the app.
+3. In the WestLaw tab, open the developer console (F12, or Ctrl+Shift+J / Cmd+Option+J, then the **Console** tab), paste the code and press Enter. Chrome may ask you to type `allow pasting` first.
+4. The app shows **Connected**. Pick a rule set as usual.
+
+Progress and results stream back into the app's viewer. If WestLaw asks for another human check partway through, the helper pauses and shows the check inside the WestLaw tab; complete it and click **Resume**.
+
+> **Security tip:** never paste code into your browser console without knowing what it does. Paste the copied code into a text or code editor first and read it before running it. The helper script is [`nextjs_space/public/westlaw-helper.js`](nextjs_space/public/westlaw-helper.js). It only fetches public WestLaw pages and sends the results back to the app tab that opened WestLaw.
 
 ---
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, FileJson, BookOpen, ChevronRight, Download, Eye, AlertCircle, ExternalLink, Check, Copy, Terminal, RotateCcw, AlertTriangle, Gauge, XCircle, Upload } from 'lucide-react';
+import { Loader2, FileJson, BookOpen, ChevronRight, Download, Eye, AlertCircle, ExternalLink, Check, Copy, Terminal, RotateCcw, AlertTriangle, Gauge, XCircle, Upload, Globe, ShieldCheck } from 'lucide-react';
 import type { RuleSetItem, ScrapedRuleSet, ScrapedDocument } from '@/lib/scraper';
 
 interface LogEntry {
@@ -26,6 +26,8 @@ const THROTTLE_PRESETS = [
   { label: 'Gentle', value: 500, desc: 'Very slow' },
 ];
 
+const WESTLAW_ORIGIN = 'https://govt.westlaw.com';
+
 // Concurrency presets
 const CONCURRENCY_PRESETS = [
   { label: '1', value: 1, desc: 'Sequential (safest)' },
@@ -38,6 +40,7 @@ export default function HomeClient() {
   const [ruleSets, setRuleSets] = useState<RuleSetItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
   const [selectedRuleSet, setSelectedRuleSet] = useState<RuleSetItem | null>(null);
   const [scraping, setScraping] = useState(false);
   const [scrapeProgress, setScrapeProgress] = useState('');
@@ -54,6 +57,11 @@ export default function HomeClient() {
   const [isUploadedData, setIsUploadedData] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  // Browser-connection mode: scraping runs in a WestLaw tab opened by the user
+  const [helperStatus, setHelperStatus] = useState<'off' | 'waiting' | 'connected'>('off');
+  const [consoleCopied, setConsoleCopied] = useState(false);
+  const westlawWinRef = useRef<Window | null>(null);
+  const helperMsgRef = useRef<(msg: any) => void>(() => {});
 
   // Auto-scroll logs to bottom
   useEffect(() => {
@@ -62,22 +70,77 @@ export default function HomeClient() {
     }
   }, [logs]);
 
-  useEffect(() => {
-    async function fetchIndex() {
-      try {
-        const response = await fetch('/api/index');
-        if (!response?.ok) throw new Error('Failed to fetch');
-        const data = await response?.json?.();
-        setRuleSets(data?.ruleSets ?? []);
-      } catch (err) {
-        setError('Failed to load rule sets. Please try again.');
-        console.error(err);
-      } finally {
-        setLoading(false);
+  const fetchIndex = async () => {
+    setLoading(true);
+    setIndexError(null);
+    try {
+      const response = await fetch('/api/index');
+      const data = await response?.json?.().catch(() => null);
+      if (!response?.ok) {
+        throw new Error(data?.error ?? `HTTP ${response?.status}`);
       }
+      if (data?.upstreamError) {
+        console.warn('Rule set index unavailable:', data.upstreamError);
+        setIndexError(data.upstreamError);
+      }
+      setRuleSets(data?.ruleSets ?? []);
+    } catch (err) {
+      console.error('Failed to load rule set index:', err);
+      setIndexError((err as Error)?.message ?? 'Unknown error');
+    } finally {
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
     fetchIndex();
   }, []);
+
+  // Listen for messages from the helper running on govt.westlaw.com
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== WESTLAW_ORIGIN || e.data?.source !== 'azr-helper') return;
+      helperMsgRef.current(e.data);
+    };
+    window.addEventListener('message', onMessage);
+    const timer = setInterval(() => {
+      if (westlawWinRef.current?.closed) {
+        westlawWinRef.current = null;
+        setHelperStatus('off');
+      }
+    }, 2000);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      clearInterval(timer);
+    };
+  }, []);
+
+  const sendToHelper = (msg: Record<string, unknown>) => {
+    westlawWinRef.current?.postMessage({ ...msg, source: 'azr-app' }, WESTLAW_ORIGIN);
+  };
+
+  const openWestlaw = () => {
+    const win = window.open(`${WESTLAW_ORIGIN}/azrules/Index`, 'azr-westlaw');
+    if (!win) {
+      setError('Your browser blocked the popup. Allow popups for this site and try again.');
+      return;
+    }
+    westlawWinRef.current = win;
+    setHelperStatus('waiting');
+  };
+
+  const copyConsoleCode = async () => {
+    try {
+      const res = await fetch(`/westlaw-helper.js?t=${Date.now()}`);
+      const src = await res.text();
+      await navigator.clipboard.writeText(`window.__AZR_APP_ORIGIN=${JSON.stringify(window.location.origin)};\n${src}`);
+      setConsoleCopied(true);
+      setTimeout(() => setConsoleCopied(false), 2500);
+    } catch (err) {
+      console.error('Failed to copy helper code:', err);
+      setError('Could not copy the helper code to the clipboard.');
+    }
+  };
 
   const addLog = (message: string, type: LogEntry['type'] = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
@@ -97,6 +160,13 @@ export default function HomeClient() {
 
     addLog(`Initiating scrape for: ${ruleSet?.title}`, 'info');
     addLog(`Settings: ${delayMs}ms delay, ${concurrency} parallel threads`, 'info');
+
+    if (helperStatus === 'connected' && westlawWinRef.current && !westlawWinRef.current.closed) {
+      addLog('Using your browser connection (WestLaw tab)', 'info');
+      setScrapeProgress('Scraping in your WestLaw tab...');
+      sendToHelper({ type: 'scrape', guid: ruleSet?.guid, title: ruleSet?.title, delayMs, concurrency });
+      return;
+    }
 
     const eventSource = new EventSource(
       `/api/scrape?guid=${encodeURIComponent(ruleSet?.guid ?? '')}&title=${encodeURIComponent(ruleSet?.title ?? '')}&delayMs=${delayMs}&concurrency=${concurrency}`
@@ -122,33 +192,7 @@ export default function HomeClient() {
             }
           }
         } else if (data.type === 'complete') {
-          setScrapedData(data.data);
-          setScrapeProgress('Complete!');
-          setProgressPercent(100);
-          
-          // Check for failed documents by comparing structure to documents
-          const docGuids = new Set((data.data?.documents ?? []).map((d: ScrapedDocument) => d.guid));
-          const failed: FailedDocument[] = [];
-          
-          const findMissingDocs = (nodes: any[]) => {
-            for (const node of nodes ?? []) {
-              if (node.type === 'document' && !docGuids.has(node.guid)) {
-                failed.push({ guid: node.guid, title: node.title, error: 'Failed to scrape' });
-              }
-              if (node.children) {
-                findMissingDocs(node.children);
-              }
-            }
-          };
-          findMissingDocs(data.data?.structure ?? []);
-          
-          setFailedDocuments(failed);
-          if (failed.length > 0) {
-            addLog(`Completed with ${failed.length} failed document(s)`, 'error');
-          } else {
-            addLog('Scrape completed successfully!', 'success');
-          }
-          setScraping(false);
+          handleScrapeComplete(data.data);
           eventSource.close();
         } else if (data.type === 'error') {
           setError(data.message);
@@ -172,11 +216,112 @@ export default function HomeClient() {
     };
   };
 
+  function handleScrapeComplete(result: ScrapedRuleSet) {
+    setScrapedData(result);
+    setScrapeProgress('Complete!');
+    setProgressPercent(100);
+
+    // Check for failed documents by comparing structure to documents
+    const docGuids = new Set((result?.documents ?? []).map((d: ScrapedDocument) => d.guid));
+    const failed: FailedDocument[] = [];
+
+    const findMissingDocs = (nodes: any[]) => {
+      for (const node of nodes ?? []) {
+        if (node.type === 'document' && !docGuids.has(node.guid)) {
+          failed.push({ guid: node.guid, title: node.title, error: 'Failed to scrape' });
+        }
+        if (node.children) {
+          findMissingDocs(node.children);
+        }
+      }
+    };
+    findMissingDocs(result?.structure ?? []);
+
+    setFailedDocuments(failed);
+    if (failed.length > 0) {
+      addLog(`Completed with ${failed.length} failed document(s)`, 'error');
+    } else {
+      addLog('Scrape completed successfully!', 'success');
+    }
+    setScraping(false);
+  }
+
+  function applyRetryResult(result: any) {
+    if (result.succeeded?.length > 0) {
+      const newDocs = result.succeeded.map((s: any) => s.document);
+      setScrapedData(prev => prev ? {
+        ...prev,
+        documents: [...prev.documents, ...newDocs],
+        metadata: {
+          ...prev.metadata,
+          totalDocuments: prev.metadata.totalDocuments + newDocs.length,
+        }
+      } : null);
+      addLog(`Successfully retried ${result.succeeded.length} document(s)`, 'success');
+    }
+    if (result.failed?.length > 0) {
+      setFailedDocuments(result.failed);
+      addLog(`${result.failed.length} document(s) still failed`, 'error');
+    } else {
+      setFailedDocuments([]);
+      addLog('All documents recovered!', 'success');
+    }
+  }
+
+  // Latest-state handler for helper messages (assigned every render)
+  helperMsgRef.current = (msg: any) => {
+    switch (msg.type) {
+      case 'ready':
+        setHelperStatus('connected');
+        setError(null);
+        sendToHelper({ type: 'index' });
+        break;
+      case 'index':
+        if (msg.ruleSets?.length) {
+          setRuleSets(msg.ruleSets);
+          setIndexError(null);
+        }
+        break;
+      case 'log':
+        if (!scraping && !retrying) break;
+        if (msg.message) {
+          setScrapeProgress(msg.message);
+          addLog(msg.message, 'progress');
+        }
+        if (typeof msg.progress === 'number') setProgressPercent(msg.progress);
+        break;
+      case 'challenge':
+        addLog('WestLaw is asking for a human check - switch to the WestLaw tab and complete it, then click Resume there.', 'error');
+        setScrapeProgress('Waiting for you to complete the human check in the WestLaw tab...');
+        break;
+      case 'complete':
+        if (scraping) handleScrapeComplete(msg.data);
+        break;
+      case 'error':
+        if (scraping) {
+          setError(msg.message);
+          addLog(msg.message, 'error');
+          setScraping(false);
+        }
+        break;
+      case 'retry-result':
+        applyRetryResult(msg);
+        setRetrying(false);
+        break;
+    }
+  };
+
   const handleRetryFailed = async () => {
     if (failedDocuments.length === 0 || !scrapedData) return;
     
     setRetrying(true);
     addLog(`Retrying ${failedDocuments.length} failed document(s)...`, 'info');
+
+    if (helperStatus === 'connected' && westlawWinRef.current && !westlawWinRef.current.closed) {
+      addLog('Retrying through your browser connection (WestLaw tab)', 'info');
+      sendToHelper({ type: 'retry', documents: failedDocuments });
+      return;
+    }
 
     try {
       const response = await fetch('/api/retry-documents', {
@@ -246,6 +391,7 @@ export default function HomeClient() {
   };
 
   const handleCancel = () => {
+    if (helperStatus === 'connected') sendToHelper({ type: 'cancel' });
     if (eventSourceRef) {
       eventSourceRef.close();
       setEventSourceRef(null);
@@ -310,33 +456,6 @@ export default function HomeClient() {
       fileInputRef.current.value = '';
     }
   };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600 dark:text-blue-400" />
-        <span className="ml-3 text-slate-600 dark:text-slate-300">Loading rule sets...</span>
-      </div>
-    );
-  }
-
-  if (error && !scrapedData) {
-    return (
-      <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg p-6 flex items-start gap-3">
-        <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
-        <div>
-          <h3 className="font-semibold text-red-800 dark:text-red-300">Error</h3>
-          <p className="text-red-600 dark:text-red-400">{error}</p>
-          <button
-            onClick={() => { setError(null); window?.location?.reload?.(); }}
-            className="mt-3 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
-          >
-            Try Again
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -416,6 +535,79 @@ export default function HomeClient() {
               </p>
             </div>
 
+            {/* Browser-connection scraping */}
+            <div className="mb-6 p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-200 dark:border-indigo-800">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-medium text-indigo-800 dark:text-indigo-300 flex items-center gap-2">
+                    <Globe className="w-5 h-5" />
+                    Scrape Using Your Own Connection
+                  </h3>
+                  <p className="text-sm text-indigo-700 dark:text-indigo-400 mt-1">
+                    If WestLaw blocks the server, run the scrape through your own browser and IP instead.
+                  </p>
+                </div>
+                <span
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                    helperStatus === 'connected'
+                      ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                      : helperStatus === 'waiting'
+                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                        : 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {helperStatus === 'connected' ? '● Connected - using your browser' : helperStatus === 'waiting' ? '● Waiting for helper...' : '○ Not connected (using server)'}
+                </span>
+              </div>
+
+              {helperStatus !== 'connected' && (
+                <>
+                  <ol className="mt-4 space-y-3 text-sm text-indigo-900 dark:text-indigo-200 list-decimal list-inside">
+                    <li>
+                      <button
+                        onClick={openWestlaw}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-sm"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Open WestLaw
+                      </button>{' '}
+                      using this button and complete any &quot;I&apos;m human&quot; check it shows.{' '}
+                      <strong>You must open WestLaw with this button.</strong> A WestLaw tab you open yourself (typed URL, bookmark, search result) can&apos;t talk to this app, so it won&apos;t connect.
+                    </li>
+                    <li>
+                      <button
+                        onClick={copyConsoleCode}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700 rounded-lg hover:bg-indigo-100 dark:hover:bg-slate-700 transition"
+                      >
+                        {consoleCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        {consoleCopied ? 'Copied!' : 'Copy console code'}
+                      </button>{' '}
+                      to copy the helper script to your clipboard.
+                    </li>
+                    <li>
+                      In the WestLaw tab, open the developer console (<strong>F12</strong>, or <strong>Ctrl+Shift+J</strong> / <strong>Cmd+Option+J</strong>, then the <strong>Console</strong> tab), paste the code and press Enter. Chrome may ask you to type <code className="px-1 bg-indigo-100 dark:bg-indigo-900/50 rounded">allow pasting</code> first.
+                    </li>
+                    <li>This panel will switch to &quot;Connected&quot;. Then pick a rule set below as usual.</li>
+                  </ol>
+
+                  <div className="mt-4 p-3 bg-white/70 dark:bg-slate-900/40 rounded-lg flex gap-2.5 text-xs text-slate-700 dark:text-slate-300">
+                    <ShieldCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400 flex-shrink-0 mt-0.5" />
+                    <p>
+                      <strong>Security tip:</strong> never paste code into your browser console without knowing what it does. Before running it, paste the copied code into a text or code editor and read it first, or{' '}
+                      <a href="/westlaw-helper.js" target="_blank" rel="noopener noreferrer" className="underline hover:no-underline">view the helper script</a>.
+                      It only reads WestLaw pages that are publicly available and sends the results back to this tab. It doesn&apos;t read your cookies or passwords, and doesn&apos;t send data anywhere else.
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {helperStatus === 'connected' && (
+                <p className="mt-3 text-sm text-indigo-900 dark:text-indigo-200">
+                  Rule sets you choose below will be scraped in your WestLaw tab. Keep that tab open; if a human check appears mid-scrape, complete it there and click Resume.
+                </p>
+              )}
+            </div>
+
             {/* Upload Previously Downloaded JSON */}
             <div className="mb-6 p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl border border-emerald-200 dark:border-emerald-800 border-dashed">
               <div className="flex items-center justify-between">
@@ -443,7 +635,38 @@ export default function HomeClient() {
                 onChange={handleFileUpload}
                 className="hidden"
               />
+              {error && (
+                <p className="mt-3 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  {error}
+                </p>
+              )}
             </div>
+
+            {loading && (
+              <div className="flex items-center justify-center py-10">
+                <Loader2 className="w-6 h-6 animate-spin text-blue-600 dark:text-blue-400" />
+                <span className="ml-3 text-slate-600 dark:text-slate-300">Loading rule sets from WestLaw...</span>
+              </div>
+            )}
+
+            {!loading && indexError && (
+              <div className="mb-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4 flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h3 className="font-medium text-amber-800 dark:text-amber-300">Couldn&apos;t load the live rule set list</h3>
+                  <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">
+                    {indexError}. WestLaw may be blocking requests from the server. Use &quot;Scrape Using Your Own Connection&quot; above, or upload a previously downloaded JSON.
+                  </p>
+                  <button
+                    onClick={fetchIndex}
+                    className="mt-3 px-3 py-1.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition text-sm font-medium"
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            )}
 
             <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4 flex items-center gap-2">
               <BookOpen className="w-5 h-5 text-blue-600 dark:text-blue-400" />

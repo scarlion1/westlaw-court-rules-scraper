@@ -49,6 +49,16 @@ export interface ScrapeOptions {
 
 const BASE_URL = 'https://govt.westlaw.com';
 
+// Standard desktop-browser request headers (a complete, current Chrome UA string)
+const REQUEST_HEADERS: Record<string, string> = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'no-cache',
+  'Pragma': 'no-cache',
+  'Upgrade-Insecure-Requests': '1',
+};
+
 // Helper to fetch with full timeout (including body read)
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<string> {
   const controller = new AbortController();
@@ -56,9 +66,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<string>
 
   try {
     const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
+      headers: REQUEST_HEADERS,
       signal: controller.signal,
     });
 
@@ -87,9 +95,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<string>
 
 export async function fetchMasterIndex(): Promise<RuleSetItem[]> {
   const response = await fetch(`${BASE_URL}/azrules/Index`, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    },
+    headers: REQUEST_HEADERS,
   });
 
   if (!response?.ok) {
